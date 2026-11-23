@@ -1,5 +1,6 @@
 // Minimal client for the official WHOOP Developer API v2 (https://developer.whoop.com/api/).
-// Read-only. Every user brings their own WHOOP developer app (client id/secret).
+// Read-only. Local mode uses one WHOOP app + tokens on disk; hosted mode uses the owner's
+// app credentials and stores each user's WHOOP tokens server-side.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -77,7 +78,7 @@ export class WhoopClient {
 
   async token() {
     let tok = this.store.load();
-    if (!tok) throw new Error("Not authorized with WHOOP yet. Run `whoop-sleep-mcp auth` (see README).");
+    if (!tok) throw new Error("Not authorized with WHOOP yet. Sign in through your MCP client, or run `whoop-sleep-mcp auth` for local mode.");
     if (tok.access_token && tok.expires_at && tok.expires_at - Date.now() > 60_000) return tok.access_token;
     if (!tok.refresh_token) throw new Error("No WHOOP refresh token stored. Re-run `whoop-sleep-mcp auth`.");
     if (!this.refreshing) {
@@ -115,7 +116,7 @@ export class WhoopClient {
       if (!res.ok) throw new Error(`WHOOP API ${res.status} on ${path}: ${text.slice(0, 300)}`);
       return text ? JSON.parse(text) : null;
     }
-    throw new Error("WHOOP rejected the token twice. Re-run `whoop-sleep-mcp auth`.");
+    throw new Error("WHOOP rejected the token twice. Sign in again (hosted) or re-run `whoop-sleep-mcp auth` (local).");
   }
 
   // Collections are paginated (limit <= 25, `nextToken`). Fetch up to maxRecords.

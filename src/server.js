@@ -18,7 +18,7 @@ const wrap = (fn) => async (args) => {
 const opts = (a, defDays = 7) => ({ start: a.start || daysAgo(defDays), end: a.end, maxRecords: a.limit || 10 });
 
 export function buildServer(client = new WhoopClient()) {
-  const server = new McpServer({ name: "whoop-sleep-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "whoop-sleep-mcp", version: "0.2.0" });
 
   server.tool("whoop_profile", "Basic WHOOP profile (name, email) plus body measurements (height, weight, WHOOP max HR).", {},
     wrap(async () => ({ profile: await client.profile(), body: await client.body() })));

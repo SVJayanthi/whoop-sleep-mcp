@@ -1,0 +1,32 @@
+# One-click host for multi-user WHOOP MCP.
+# Persistent disk keeps each user's encrypted WHOOP tokens across deploys.
+# After the first deploy, copy the onrender.com URL into the WHOOP app's Redirect URI:
+#   https://<your-service>.onrender.com/callback
+services:
+  - type: web
+    name: whoop-sleep-mcp
+    runtime: node
+    plan: starter
+    buildCommand: npm install --omit=dev
+    startCommand: node src/cli.js serve
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: MCP_TRANSPORT
+        value: http
+      - key: MCP_MODE
+        value: hosted
+      - key: DATA_DIR
+        value: /var/data
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: WHOOP_CLIENT_ID
+        sync: false
+      - key: WHOOP_CLIENT_SECRET
+        sync: false
+    disk:
+      name: whoop-tokens
+      mountPath: /var/data
+      sizeGB: 1

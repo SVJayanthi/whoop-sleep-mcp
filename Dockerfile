@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY src ./src
-ENV MCP_TRANSPORT=http PORT=3000 WHOOP_TOKEN_FILE=/data/tokens.json
+ENV MCP_TRANSPORT=http MCP_MODE=hosted PORT=3000 DATA_DIR=/data
 RUN mkdir -p /data && chown node /data
 VOLUME /data
 EXPOSE 3000

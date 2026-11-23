@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// whoop-sleep-mcp  auth [--manual] | serve [--http] | status
+// whoop-sleep-mcp  auth [--manual] | serve [--http] [--hosted] | status
 import { createServer } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { config, TokenStore, exchangeToken, AUTH_URL, SCOPES } from "./whoop.js";
+import { isHostedMode } from "./http.js";
 
 const cfg = config();
 const cmd = process.argv[2] || "serve";
@@ -56,45 +57,50 @@ async function auth() {
 }
 
 async function serve() {
+  if (isHostedMode(process.env, flags)) {
+    need();
+    if (!process.env.TOKEN_ENCRYPTION_KEY) {
+      console.error("Hosted mode needs TOKEN_ENCRYPTION_KEY (e.g. `openssl rand -hex 32`).");
+      process.exit(1);
+    }
+    const { listenHosted } = await import("./http.js");
+    await listenHosted({ env: process.env });
+    return;
+  }
   const { buildServer } = await import("./server.js");
   if (!flags.has("--http") && process.env.MCP_TRANSPORT !== "http") {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     await buildServer().connect(new StdioServerTransport());
     return;
   }
-  const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
-  const express = (await import("express")).default;
   const secret = process.env.MCP_AUTH_TOKEN;
-  if (!secret || secret.length < 32) { console.error("HTTP mode needs MCP_AUTH_TOKEN (>= 32 chars, e.g. `openssl rand -hex 32`)."); process.exit(1); }
-  const app = express();
-  app.use(express.json({ limit: "1mb" }));
-  app.get("/health", (_q, r) => r.json({ ok: true }));
-  app.use("/mcp", (req, res, next) => {
-    const got = Buffer.from((req.headers.authorization || "").replace(/^Bearer\s+/i, ""));
-    const want = Buffer.from(secret);
-    if (got.length !== want.length || !timingSafeEqual(got, want)) return res.status(401).json({ error: "unauthorized" });
-    next();
-  });
-  app.post("/mcp", async (req, res) => {
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); // stateless
-    const server = buildServer();
-    res.on("close", () => { transport.close(); server.close(); });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  });
-  app.all("/mcp", (_q, r) => r.status(405).json({ error: "POST only (stateless Streamable HTTP)" }));
-  const port = Number(process.env.PORT) || 3000;
-  app.listen(port, () => console.error(`whoop-sleep-mcp HTTP on :${port}/mcp`));
+  if (!secret || secret.length < 32) {
+    console.error("HTTP mode needs MCP_AUTH_TOKEN (>= 32 chars, e.g. `openssl rand -hex 32`). For multi-user OAuth, set MCP_MODE=hosted and TOKEN_ENCRYPTION_KEY instead.");
+    process.exit(1);
+  }
+  const { listenSharedToken } = await import("./http.js");
+  await listenSharedToken({ env: process.env });
 }
 
 function status() {
+  if (isHostedMode(process.env, flags)) {
+    console.log(JSON.stringify({
+      mode: "hosted",
+      client_id_set: !!cfg.clientId,
+      client_secret_set: !!cfg.clientSecret,
+      encryption_key_set: !!process.env.TOKEN_ENCRYPTION_KEY,
+      data_dir: process.env.DATA_DIR || process.env.HOSTED_STORE_FILE || "(default ~/.whoop-mcp)",
+    }, null, 2));
+    return;
+  }
   const t = new TokenStore(cfg.tokenFile).load();
   console.log(JSON.stringify({
+    mode: "local",
     client_id_set: !!cfg.clientId, client_secret_set: !!cfg.clientSecret, redirect_uri: cfg.redirectUri,
     token_file: cfg.tokenFile, has_refresh_token: !!t?.refresh_token,
     access_token_valid_for_s: t?.expires_at ? Math.max(0, Math.round((t.expires_at - Date.now()) / 1000)) : 0,
   }, null, 2));
 }
 
-({ auth, serve, status }[cmd] || (() => { console.error("usage: whoop-sleep-mcp auth [--manual] | serve [--http] | status"); process.exit(1); }))()
+({ auth, serve, status }[cmd] || (() => { console.error("usage: whoop-sleep-mcp auth [--manual] | serve [--http] [--hosted] | status"); process.exit(1); }))()
   .catch?.((e) => { console.error(e.message || e); process.exit(1); });
