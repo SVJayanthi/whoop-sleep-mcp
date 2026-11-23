@@ -1,0 +1,30 @@
+{
+  "name": "whoop-sleep-mcp",
+  "version": "0.1.0",
+  "description": "Read-only MCP server for the official WHOOP Developer API v2 (sleep, recovery, cycles, workouts, profile) with a sleep-window heart-rate metrics tool. Bring your own WHOOP developer app.",
+  "author": "Sravan Jayanthi",
+  "license": "MIT",
+  "homepage": "https://github.com/SVJayanthi/whoop-sleep-mcp",
+  "bugs": {
+    "url": "https://github.com/SVJayanthi/whoop-sleep-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SVJayanthi/whoop-sleep-mcp.git"
+  },
+  "type": "module",
+  "bin": { "whoop-sleep-mcp": "./src/cli.js" },
+  "main": "./src/server.js",
+  "files": ["src/", "README.md", "LICENSE", ".env.example", "Dockerfile"],
+  "scripts": {
+    "start": "node src/cli.js serve",
+    "auth": "node src/cli.js auth",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "express": "^5.1.0",
+    "zod": "^3.25.0"
+  }
+}

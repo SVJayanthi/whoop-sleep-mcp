@@ -1,0 +1,195 @@
+diff --git a/src/projections/sleep.ts b/src/projections/sleep.ts
+index 3c00fdf..392556d 100644
+--- a/src/projections/sleep.ts
++++ b/src/projections/sleep.ts
+@@ -86,7 +86,7 @@ const STAGE_MAP: Record<string, "AWAKE" | "LIGHT" | "REM" | "SWS"> = {
+   SWS_SLEEP: "SWS",
+ };
+ 
+-interface StagePoint {
++export interface StagePoint {
+   x: number;
+   stage: "AWAKE" | "LIGHT" | "REM" | "SWS";
+   bpm: number | null;
+@@ -106,7 +106,7 @@ function parseClockMinutes(s: string | null): number | null {
+   return h * 60 + min;
+ }
+ 
+-function collectStagePoints(raw: unknown): StagePoint[] {
++export function collectStagePoints(raw: unknown): StagePoint[] {
+   const out: StagePoint[] = [];
+   function walk(n: unknown): void {
+     if (Array.isArray(n)) {
+diff --git a/src/projections/sleep_hr.ts b/src/projections/sleep_hr.ts
+new file mode 100644
+index 0000000..0efa3e7
+--- /dev/null
++++ b/src/projections/sleep_hr.ts
+@@ -0,0 +1,90 @@
++import { collectStagePoints, type StagePoint } from "./sleep.js";
++import { isObject, asString } from "../lib/walk.js";
++
++// Heart rate around the sleep window, derived from the same per-minute in-sleep
++// HR curve that whoop_sleep uses for its hypnogram. Every value comes from points
++// WHOOP drew on the sleep graph; anything that can't be derived is null.
++//
++//   in_bed_awake_hr_bpm  mean HR of AWAKE points before the first sleep point
++//                        (closest thing to "pre-sleep HR" this endpoint has; the
++//                        curve starts when WHOOP detects the sleep window)
++//   sleep_onset_hr_bpm   mean HR over the first 10 minutes after the first sleep point
++//   lowest_hr_bpm/_at    minimum HR across sleep points and when it occurred
++//   avg_sleeping_hr_bpm  mean HR across non-AWAKE points
++//   by_stage             mean HR per stage
++//   first_vs_second_half mean sleeping HR in each half of the window
++
++export interface SleepHrOut {
++  date: string;
++  started_at: string | null;
++  ended_at: string | null;
++  points: number;
++  in_bed_awake_hr_bpm: number | null;
++  sleep_onset_at: string | null;
++  sleep_onset_hr_bpm: number | null;
++  lowest_hr_bpm: number | null;
++  lowest_hr_at: string | null;
++  lowest_hr_pct_into_sleep: number | null;
++  avg_sleeping_hr_bpm: number | null;
++  by_stage: Record<"AWAKE" | "LIGHT" | "SWS" | "REM", number | null>;
++  first_half_avg_bpm: number | null;
++  second_half_avg_bpm: number | null;
++  note: string;
++}
++
++const mean = (xs: number[]): number | null => (xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10 : null);
++
++export function projectSleepHr(raw: unknown, date: string): SleepHrOut {
++  const root = isObject(raw) ? raw : {};
++  const hs = isObject(root.header_section) ? (root.header_section as Record<string, unknown>) : {};
++  const dest = isObject(hs.destination) ? (hs.destination as Record<string, unknown>) : null;
++  const params = dest && isObject(dest.parameters) ? (dest.parameters as Record<string, unknown>) : null;
++  const startedAt = params ? asString(params.start_time) : null;
++  const endedAt = params ? asString(params.end_time) : null;
++
++  const pts = collectStagePoints(raw).filter((p): p is StagePoint & { bpm: number; clockMin: number } => p.bpm !== null && p.clockMin !== null);
++  const empty = (note: string): SleepHrOut => ({
++    date, started_at: startedAt, ended_at: endedAt, points: pts.length,
++    in_bed_awake_hr_bpm: null, sleep_onset_at: null, sleep_onset_hr_bpm: null, lowest_hr_bpm: null, lowest_hr_at: null,
++    lowest_hr_pct_into_sleep: null, avg_sleeping_hr_bpm: null, by_stage: { AWAKE: null, LIGHT: null, SWS: null, REM: null },
++    first_half_avg_bpm: null, second_half_avg_bpm: null, note,
++  });
++  if (pts.length < 2) return empty("No in-sleep HR curve in this response (not scored yet, or WHOOP changed the shape).");
++
++  // Monotonic minutes from the first clock label (midnight wrap), anchored to the
++  // UTC window midpoint exactly as projectSleep does for the hypnogram.
++  const rel: number[] = [0];
++  for (let i = 1; i < pts.length; i++) {
++    let d = pts[i]!.clockMin - pts[i - 1]!.clockMin;
++    if (d < -720) d += 1440;
++    rel.push(rel[i - 1]! + d);
++  }
++  const s = startedAt ? Date.parse(startedAt) : NaN;
++  const e = endedAt ? Date.parse(endedAt) : NaN;
++  const relMid = (rel[0]! + rel[rel.length - 1]!) / 2;
++  const at = (i: number): string | null =>
++    Number.isNaN(s) || Number.isNaN(e) ? null : new Date((s + e) / 2 + (rel[i]! - relMid) * 60000).toISOString();
++
++  const onsetIdx = pts.findIndex((p) => p.stage !== "AWAKE");
++  if (onsetIdx < 0) return empty("Curve has only AWAKE points.");
++  const asleepIdx = pts.map((p, i) => (p.stage !== "AWAKE" ? i : -1)).filter((i) => i >= 0);
++  const lowIdx = asleepIdx.reduce((m, i) => (pts[i]!.bpm < pts[m]!.bpm ? i : m), asleepIdx[0]!);
++  const span = rel[asleepIdx[asleepIdx.length - 1]!]! - rel[onsetIdx]!;
++  const half = rel[onsetIdx]! + span / 2;
++  const stage = (st: StagePoint["stage"]) => mean(pts.filter((p) => p.stage === st).map((p) => p.bpm));
++
++  return {
++    date, started_at: startedAt, ended_at: endedAt, points: pts.length,
++    in_bed_awake_hr_bpm: mean(pts.slice(0, onsetIdx).map((p) => p.bpm)),
++    sleep_onset_at: at(onsetIdx),
++    sleep_onset_hr_bpm: mean(asleepIdx.filter((i) => rel[i]! - rel[onsetIdx]! < 10).map((i) => pts[i]!.bpm)),
++    lowest_hr_bpm: pts[lowIdx]!.bpm,
++    lowest_hr_at: at(lowIdx),
++    lowest_hr_pct_into_sleep: span > 0 ? Math.round(((rel[lowIdx]! - rel[onsetIdx]!) / span) * 100) : null,
++    avg_sleeping_hr_bpm: mean(asleepIdx.map((i) => pts[i]!.bpm)),
++    by_stage: { AWAKE: stage("AWAKE"), LIGHT: stage("LIGHT"), SWS: stage("SWS"), REM: stage("REM") },
++    first_half_avg_bpm: mean(asleepIdx.filter((i) => rel[i]! <= half).map((i) => pts[i]!.bpm)),
++    second_half_avg_bpm: mean(asleepIdx.filter((i) => rel[i]! > half).map((i) => pts[i]!.bpm)),
++    note: "Derived from WHOOP's in-sleep HR graph (private app API). Times are reconstructed from the graph's clock labels, so treat them as +/- a few minutes. The curve starts at WHOOP-detected sleep start, so pre-bed HR before that is not included; read it live with whoop_live_hr at lights-out.",
++  };
++}
+diff --git a/src/tools/register.ts b/src/tools/register.ts
+index 956a67c..e32234d 100644
+--- a/src/tools/register.ts
++++ b/src/tools/register.ts
+@@ -11,6 +11,7 @@ import { registerCalendar } from "./v2/calendar.js";
+ import { registerRecovery } from "./v2/recovery.js";
+ import { registerSleep } from "./v2/sleep.js";
+ import { registerSleepEdit } from "./v2/sleep_edit.js";
++import { registerSleepHr } from "./v2/sleep_hr.js";
+ import { registerStrain } from "./v2/strain.js";
+ // Trends + compare
+ import { registerTrend } from "./v2/trend.js";
+@@ -81,6 +82,7 @@ export function registerTools(server: McpServer, client: WhoopClient): void {
+   registerCalendar(server, client);
+   registerRecovery(server, client);
+   registerSleep(server, client);
++  registerSleepHr(server, client);
+   registerStrain(server, client);
+   registerTrend(server, client);
+   registerTrendPack(server, client);
+diff --git a/src/tools/v2/sleep_hr.ts b/src/tools/v2/sleep_hr.ts
+new file mode 100644
+index 0000000..3a57847
+--- /dev/null
++++ b/src/tools/v2/sleep_hr.ts
+@@ -0,0 +1,19 @@
++import { z } from "zod";
++import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
++import type { WhoopClient } from "../../whoop/client.js";
++import { projectSleepHr } from "../../projections/sleep_hr.js";
++import { jsonOut } from "../../whoop/json_out.js";
++import { todayIso } from "../../lib/dates.js";
++
++export function registerSleepHr(server: McpServer, client: WhoopClient): void {
++  server.tool(
++    "whoop_sleep_hr",
++    "Heart rate around last night's sleep, from the in-sleep HR curve: in-bed awake HR before onset, sleep-onset HR (first 10 min), lowest HR and when it happened, average sleeping HR, per-stage HR, and first- vs second-half HR. Pair with whoop_recovery for RHR/HRV/respiratory rate.",
++    { date: z.iso.date().optional() },
++    async ({ date }) => {
++      const d = date ?? todayIso();
++      const raw = await client.get("/home-service/v1/deep-dive/sleep/last-night", { date: d });
++      return { content: [{ type: "text", text: jsonOut(projectSleepHr(raw, d)) }] };
++    },
++  );
++}
+diff --git a/tests/projections/sleep_hr.test.ts b/tests/projections/sleep_hr.test.ts
+new file mode 100644
+index 0000000..551b7a1
+--- /dev/null
++++ b/tests/projections/sleep_hr.test.ts
+@@ -0,0 +1,26 @@
++import { describe, it, expect } from "vitest";
++import { readFileSync } from "node:fs";
++import { projectSleepHr } from "../../src/projections/sleep_hr.js";
++import { projectSleep } from "../../src/projections/sleep.js";
++
++const raw = JSON.parse(readFileSync(new URL("../fixtures/deep_dive_sleep.json", import.meta.url), "utf8"));
++
++describe("projectSleepHr", () => {
++  const out = projectSleepHr(raw, "2026-05-23");
++  it("agrees with whoop_sleep's min HR", () => {
++    expect(out.lowest_hr_bpm).toBe(projectSleep(raw, "2026-05-23").sleep_hr.min_bpm);
++  });
++  it("derives onset, nadir time and stage means inside the window", () => {
++    expect(out.points).toBeGreaterThan(100);
++    expect(out.sleep_onset_hr_bpm).not.toBeNull();
++    expect(out.avg_sleeping_hr_bpm).not.toBeNull();
++    const t = Date.parse(out.lowest_hr_at!);
++    expect(t).toBeGreaterThanOrEqual(Date.parse(out.started_at!) - 3600e3);
++    expect(t).toBeLessThanOrEqual(Date.parse(out.ended_at!) + 3600e3);
++    expect(out.lowest_hr_pct_into_sleep).toBeGreaterThanOrEqual(0);
++    expect(out.lowest_hr_pct_into_sleep).toBeLessThanOrEqual(100);
++  });
++  it("returns nulls, not guesses, on an empty response", () => {
++    expect(projectSleepHr({}, "2026-05-23").lowest_hr_bpm).toBeNull();
++  });
++});
