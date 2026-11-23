@@ -1,3 +1,7 @@
 node_modules/
 .env
 tokens.json
+data/
+hosted-store.json
+*.tgz
+.whoop-mcp/
